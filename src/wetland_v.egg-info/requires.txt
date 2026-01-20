@@ -20,3 +20,6 @@ pdal>=3.4
 
 [raster]
 rasterio>=1.3
+
+[speed]
+numba>=0.59

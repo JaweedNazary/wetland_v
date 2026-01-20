@@ -26,6 +26,15 @@ def _require_lidar_deps():
         ) from e
 
 
+def _normalize_year(y):
+    if y is None:
+        return None
+    y = int(y)
+    if y < 100:   # treat 17 as 2017, 5 as 2005
+        return 2000 + y
+    return y
+
+
 def _parse_year_4digit(name: str) -> Optional[int]:
     m = re.search(r"(19\d{2}|20\d{2})", name)
     return int(m.group(1)) if m else None
@@ -41,17 +50,15 @@ class LidarPoints:
     las_path: Path
 
 
-def get_lidar_points_around_geometry_3857(
-    geom_3857: BaseGeometry,
-    index: ThreeDEPIndex,
-    *,
-    buffer_distance: float = 3.0,
-    res: float = 2.0,
-    out_name: str = "sample_line",
-    out_dir: str | Path = ".",
-    prefer_year: Optional[int] = None,
-    debug: bool = False,
-) -> LidarPoints:
+def get_lidar_points_around_geometry_3857(geom_3857: BaseGeometry,
+                                          index: ThreeDEPIndex,
+                                          *,
+                                          buffer_distance: float = 3.0,
+                                          res: float = 2.0,
+                                          out_name: str = "sample_line",
+                                          out_dir: str | Path = ".",
+                                          prefer_year: Optional[int] = None,
+                                          debug: bool = False,):
     """
     EPSG:3857-only workflow.
 
@@ -62,6 +69,10 @@ def get_lidar_points_around_geometry_3857(
 
     prefer_year expects a 4-digit year (e.g., 2019).
     """
+
+    prefer_year_n = _normalize_year(prefer_year)
+
+
     _require_lidar_deps()
     import pdal
     import laspy
@@ -81,10 +92,11 @@ def get_lidar_points_around_geometry_3857(
             continue
 
         name = str(index.names.iloc[i])
-        yr = _parse_year_4digit(name)
+        yr = _parse_year_4digit(name)  # returns 2017, 2018, etc.
 
-        if prefer_year is not None:
-            if yr is None or yr != prefer_year:
+
+        if prefer_year_n is not None:
+            if yr is None or yr != prefer_year_n:
                 continue
 
         datasets.append(name)
@@ -103,17 +115,16 @@ def get_lidar_points_around_geometry_3857(
 
     # IMPORTANT: match your original build_pdal_pipeline signature exactly:
     pipeline_dict = build_pdal_pipeline(
-        extent_epsg3857=aoi_wkt,
-        usgs_3dep_dataset_names=datasets,
-        pc_resolution=res,
-        filterNoise=False,
-        reclassify=False,
-        savePointCloud=True,
-        outCRS=3857,
-        pc_outName=str(las_path.with_suffix("")),  # base path without extension
-        pc_outType="las",
-        debug=debug,
-    )
+          aoi_wkt,          # extent_epsg3857_wkt (positional is safest)
+          datasets,         # usgs_3dep_dataset_names
+          res,              # pc_resolution
+          filter_noise=False,
+          reclassify=False,
+          save_pointcloud=True,
+          out_crs=3857,
+          pc_out_name=str(las_path.with_suffix("")),  # base path without extension
+          pc_out_type="las",
+          debug=debug,)
 
     pipe = pdal.Pipeline(json.dumps(pipeline_dict))
     pipe.execute()

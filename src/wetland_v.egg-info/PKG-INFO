@@ -22,6 +22,8 @@ Requires-Dist: laspy>=2.5; extra == "lidar"
 Requires-Dist: pdal>=3.4; extra == "lidar"
 Provides-Extra: raster
 Requires-Dist: rasterio>=1.3; extra == "raster"
+Provides-Extra: speed
+Requires-Dist: numba>=0.59; extra == "speed"
 Provides-Extra: dev
 Requires-Dist: pytest>=7; extra == "dev"
 Requires-Dist: ruff>=0.5; extra == "dev"
