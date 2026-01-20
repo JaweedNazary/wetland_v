@@ -15,3 +15,5 @@ __all__ = [
     "ThreeDEPIndex",
     "load_3dep_index",
 ]
+
+__version__ = "0.1.0"
