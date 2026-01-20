@@ -30,8 +30,10 @@ lidar = [
   "pdal>=3.4",
 ]
 raster = [
-  "rasterio>=1.3",
-]
+  "rasterio>=1.3"]
+  
+speed = ["numba>=0.59"]
+
 dev = [
   "pytest>=7",
   "ruff>=0.5",
