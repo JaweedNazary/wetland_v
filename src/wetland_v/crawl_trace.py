@@ -1,12 +1,27 @@
 from __future__ import annotations
-
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Tuple, Union, List, Optional
 import random
-from typing import Tuple
 import sys
 import warnings
+import pyproj
+from shapely.geometry.base import BaseGeometry
+from shapely.ops import transform
+import geopandas as gpd
+import pandas as pd
+from shapely.geometry import Point, LineString, shape
+import numpy as np
+from .crs import proj_to_3857, gcs_to_proj
+from .usgs_3dep import ThreeDEPIndex
+import json
+import requests
+
+
+
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
-import numpy as np
 
 # Optional numba support
 try:
@@ -16,18 +31,373 @@ except Exception:  # pragma: no cover
     _HAS_NUMBA = False
     prange = range  # fallback
 
-import geopandas as gpd
-import pandas as pd
-from shapely.geometry import LineString, Point
-from .usgs_3dep import load_3dep_index
 
-# Import your own package functions
+
+from .usgs_3dep import load_3dep_index
 from .lidar import get_lidar_points_around_geometry_3857
 from .sampling import get_cross_section_mask  # <-- wherever you put it
 from .sampling import random_window_generator  # <-- wherever you put it
 from .sampling import grid_1D_interpolation  # <-- wherever you put it
 from .sampling import get_feature_direction  # <-- wherever you put it
 from .plot import smoother_data  # <-- wherever you put it
+from .crs import proj_to_3857, gcs_to_proj, CRSLike
+from .pdal_pipeline import build_pdal_pipeline
+from .usgs_3dep import ThreeDEPIndex
+from .crs import gcs_to_proj
+
+
+
+CRSLike = Union[str, pyproj.CRS]
+
+
+########################################
+### Projecttion Parts                ###
+########################################
+
+
+def proj_to_3857(poly: BaseGeometry, orig_crs: CRSLike) -> Tuple[BaseGeometry, BaseGeometry]:
+    """
+    Project a geometry from orig_crs into:
+      - EPSG:4326 (WGS84)
+      - EPSG:3857 (Web Mercator)
+
+    Returns (geom_4326, geom_3857).
+    """
+    wgs84 = pyproj.CRS("EPSG:4326")
+    web_mercator = pyproj.CRS("EPSG:3857")
+
+    orig = pyproj.CRS.from_user_input(orig_crs)
+    to_4326 = pyproj.Transformer.from_crs(orig, wgs84, always_xy=True).transform
+    to_3857 = pyproj.Transformer.from_crs(orig, web_mercator, always_xy=True).transform
+
+    return transform(to_4326, poly), transform(to_3857, poly)
+
+
+def gcs_to_proj(poly: BaseGeometry) -> BaseGeometry:
+    """EPSG:4326 -> EPSG:3857"""
+    wgs84 = pyproj.CRS("EPSG:4326")
+    web_mercator = pyproj.CRS("EPSG:3857")
+    project = pyproj.Transformer.from_crs(wgs84, web_mercator, always_xy=True).transform
+    return transform(project, poly)
+
+
+
+
+#######################################################
+##########     AOI and USGS 3DEP Polygons          ####
+#######################################################
+
+
+@dataclass(frozen=True)
+class AOI:
+    geom_4326: BaseGeometry
+    geom_3857: BaseGeometry
+
+    @property
+    def bounds_3857(self):
+        return self.geom_3857.bounds
+
+
+def import_shapefile_to_aoi(path: Union[str, Path]) -> AOI:
+    gdf = gpd.read_file(str(path))
+    if gdf.empty:
+        raise ValueError("Shapefile has no features.")
+    orig_crs = gdf.crs
+    geom = gdf.loc[gdf.index[0], "geometry"]
+    geom_4326, geom_3857 = proj_to_3857(geom, orig_crs)
+    return AOI(geom_4326=geom_4326, geom_3857=geom_3857)
+
+
+def aoi_from_geojson_geometry(geo_json: dict) -> AOI:
+    """Takes a GeoJSON feature or geometry dict and returns AOI in 4326 + 3857."""
+    geom_dict = geo_json["geometry"] if "geometry" in geo_json else geo_json
+    geom_4326 = shape(geom_dict)
+    geom_3857 = gcs_to_proj(geom_4326)
+    return AOI(geom_4326=geom_4326, geom_3857=geom_3857)
+
+
+
+DEFAULT_3DEP_URL = "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
+
+
+@dataclass(frozen=True)
+class ThreeDEPIndex:
+    """
+    Container for the USGS 3DEP boundary index.
+
+    Attributes
+    ----------
+    gdf : GeoDataFrame
+        Original polygons in their original CRS (usually EPSG:4326).
+    geometries_3857 : GeoSeries
+        Same polygons projected to EPSG:3857.
+    """
+    gdf: gpd.GeoDataFrame
+    geometries_3857: gpd.GeoSeries
+
+    @property
+    def names(self) -> pd.Series:
+        return self.gdf["name"]
+
+    @property
+    def urls(self) -> pd.Series:
+        return self.gdf["url"]
+
+    @property
+    def counts(self) -> pd.Series:
+        return self.gdf["count"]
+
+    @property
+    def geometries_gcs(self) -> gpd.GeoSeries:
+        return self.gdf.geometry
+
+    @property
+    def years_from_name_last4(self) -> pd.Series:
+        # matches your original: year = df["name"].str[-4:]
+        return self.gdf["name"].astype(str).str[-4:]
+
+
+def load_3dep_index(url: str = DEFAULT_3DEP_URL, *, timeout: int = 60) -> ThreeDEPIndex:
+    """
+    Download and load the 3DEP dataset polygons (resources.geojson).
+
+    This does NOT write to disk (unlike your notebook).
+    """
+    r = requests.get(url, timeout=timeout)
+    r.raise_for_status()
+
+    # geopandas can read a GeoJSON string directly
+    gdf = gpd.read_file(r.text)
+
+    # Project polygons to EPSG:3857 (needed for EPT polygon queries)
+    projected = [gcs_to_proj(geom) for geom in gdf.geometry]
+    geoms_3857 = gpd.GeoSeries(projected, crs="EPSG:3857")
+
+    return ThreeDEPIndex(gdf=gdf, geometries_3857=geoms_3857)
+
+##############################################################
+##### LIDAR DATA DOWNLOAD                            #########
+##############################################################
+
+def build_pdal_pipeline(
+    extent_epsg3857_wkt: str,
+    usgs_3dep_dataset_names: List[str],
+    pc_resolution: float,
+    *,
+    filter_noise: bool = False,
+    reclassify: bool = False,
+    save_pointcloud: bool = True,
+    out_crs: int = 3857,
+    pc_out_name: str = "filter_test",
+    pc_out_type: str = "laz",
+    debug: bool = False,
+) -> Dict:
+    readers = []
+    for name in usgs_3dep_dataset_names:
+        url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{name}/ept.json"
+        readers.append(
+            {
+                "type": "readers.ept",
+                "filename": url,
+                "polygon": extent_epsg3857_wkt,
+                "requests": 3,
+                "resolution": pc_resolution,
+            }
+        )
+
+    pipeline = {"pipeline": readers}
+
+    if filter_noise:
+        pipeline["pipeline"].append({"type": "filters.range", "limits": "Classification[2:2]"})
+
+    if reclassify:
+        pipeline["pipeline"].extend(
+            [
+                {"type": "filters.assign", "value": "Classification = 0"},
+                {"type": "filters.smrf"},
+                {"type": "filters.range", "limits": "Classification[2:2]"},
+            ]
+        )
+
+    pipeline["pipeline"].append({"type": "filters.reprojection", "out_srs": f"EPSG:{out_crs}"})
+
+    if debug:
+        pipeline["debug"] = True
+
+    if save_pointcloud:
+        if pc_out_type not in {"las", "laz"}:
+            raise ValueError("pc_out_type must be 'las' or 'laz'.")
+        writer = {"type": "writers.las", "filename": f"{pc_out_name}.{pc_out_type}"}
+        if pc_out_type == "laz":
+            writer["compression"] = "laszip"
+        pipeline["pipeline"].append(writer)
+
+    return pipeline
+
+
+def _require_lidar_deps():
+    try:
+        import pdal  # noqa: F401
+        import laspy  # noqa: F401
+    except Exception as e:
+        raise ImportError(
+            "PDAL + laspy required. Install with:\n"
+            "  pip install -e \".[lidar]\"\n"
+            "or\n"
+            "  pip install \"wetland_v[lidar] @ git+https://github.com/JaweedNazary/wetland_v.git\""
+        ) from e
+
+
+def _normalize_year(y):
+    if y is None:
+        return None
+    y = int(y)
+    if y < 100:   # treat 17 as 2017, 5 as 2005
+        return 2000 + y
+    return y
+
+
+def _parse_year_4digit(name: str) -> Optional[int]:
+    m = re.search(r"(19\d{2}|20\d{2})", name)
+    return int(m.group(1)) if m else None
+
+
+@dataclass(frozen=True)
+class LidarPoints:
+    ground_xyz: np.ndarray
+    veg_xyz: np.ndarray
+    water_xyz: np.ndarray
+    all_xyz: np.ndarray
+    most_recent_year: Optional[int]
+    las_path: Path
+
+
+def get_lidar_points_around_geometry_3857(geom_3857: BaseGeometry,
+                                          index: ThreeDEPIndex,
+                                          *,
+                                          buffer_distance: float = 3.0,
+                                          res: float = 2.0,
+                                          out_name: str = "sample_line",
+                                          out_dir: str | Path = ".",
+                                          prefer_year: Optional[int] = None,
+                                          debug: bool = False,):
+    """
+    EPSG:3857-only workflow.
+
+    - Buffers geom (meters)
+    - Finds intersecting 3DEP polygons
+    - Runs PDAL EPT->LAS
+    - Returns Nx3 arrays (x,y,z)
+
+    prefer_year expects a 4-digit year (e.g., 2019).
+    """
+
+    prefer_year_n = _normalize_year(prefer_year)
+
+
+    _require_lidar_deps()
+    import pdal
+    import laspy
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    las_path = out_dir / f"{out_name}.las"
+
+    aoi = geom_3857.buffer(buffer_distance, cap_style=3)
+    aoi_wkt = aoi.wkt
+
+    datasets: list[str] = []
+    most_recent: Optional[int] = None
+
+    for i, poly in enumerate(index.geometries_3857):
+        if not poly.intersects(aoi):
+            continue
+
+        name = str(index.names.iloc[i])
+        yr = _parse_year_4digit(name)  # returns 2017, 2018, etc.
+
+
+        if prefer_year_n is not None:
+            if yr is None or yr != prefer_year_n:
+                continue
+
+        datasets.append(name)
+        if yr is not None:
+            most_recent = yr if (most_recent is None or yr > most_recent) else most_recent
+
+    if debug:
+        print(f"AOI bounds (3857): {aoi.bounds}")
+        print(f"Intersecting datasets: {len(datasets)}")
+        if datasets:
+            print("First few:", datasets[:5])
+        print("Most recent year:", most_recent)
+
+    if not datasets:
+        raise ValueError("No 3DEP polygon intersects the AOI (or year filter excluded all).")
+
+    # IMPORTANT: match your original build_pdal_pipeline signature exactly:
+    pipeline_dict = build_pdal_pipeline(
+          aoi_wkt,          # extent_epsg3857_wkt (positional is safest)
+          datasets,         # usgs_3dep_dataset_names
+          res,              # pc_resolution
+          filter_noise=False,
+          reclassify=False,
+          save_pointcloud=True,
+          out_crs=3857,
+          pc_out_name=str(las_path.with_suffix("")),  # base path without extension
+          pc_out_type="las",
+          debug=debug,)
+
+    pipe = pdal.Pipeline(json.dumps(pipeline_dict))
+    pipe.execute()
+
+    if not las_path.exists():
+        raise FileNotFoundError(f"Expected LAS not found: {las_path}")
+
+    las = laspy.read(str(las_path))
+    all_xyz = np.column_stack([las.x, las.y, las.z])
+
+    cls = las.classification
+    ground_xyz = all_xyz[cls == 2] if np.any(cls == 2) else np.empty((0, 3))
+    veg_xyz = all_xyz[cls == 1] if np.any(cls == 1) else np.empty((0, 3))
+    water_xyz = all_xyz[cls == 9] if np.any(cls == 9) else np.empty((0, 3))
+
+    if debug:
+        print("Total points:", all_xyz.shape[0])
+        print("Ground:", ground_xyz.shape[0], "Veg:", veg_xyz.shape[0], "Water:", water_xyz.shape[0])
+
+    return LidarPoints(
+        ground_xyz=ground_xyz,
+        veg_xyz=veg_xyz,
+        water_xyz=water_xyz,
+        all_xyz=all_xyz,
+        most_recent_year=most_recent,
+        las_path=las_path,
+    )
+
+
+
+def get_available_years(point_geom: BaseGeometry, index: ThreeDEPIndex, buffer_distance: float = 3) -> List[int]:
+    geom_buff = point_geom.buffer(buffer_distance, cap_style=3)
+    aoi_gcs, _ = proj_to_3857(geom_buff, "EPSG:3857")
+    aoi_3857 = gcs_to_proj(aoi_gcs)
+
+    years: List[int] = []
+
+    for i, poly_3857 in enumerate(index.geometries_3857):
+        if not poly_3857.contains(aoi_3857):
+            continue
+
+        name = str(index.names.iloc[i])
+        nums = re.findall(r"\d+", name)
+        if nums:
+            years.append(int(nums[-1][-2:]))  # keep your original behavior
+
+    return years
+
+##############################################################
+############# CRAWL TRACE                             ########
+##############################################################
 
 
 def one_step_crawl(
@@ -474,3 +844,5 @@ def Crawl_Trace(location, N, min_height, max_height, window_size, D, r, resoluti
                     gdf_traced_lines = pd.concat([gdf_traced_lines, new_line_gdf], ignore_index=True)
     print(f'Crawling and tracing processes are successfully compeleted.')        
     return gdf_points, gdf_traced_lines, sampled_points
+
+
