@@ -1,4 +1,5 @@
 LICENSE
+README.md
 pyproject.toml
 src/wetland_v/__init__.py
 src/wetland_v/_types.py
