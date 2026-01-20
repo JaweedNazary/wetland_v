@@ -12,7 +12,7 @@ License: MIT
 
 
 
-from .plot import plot_lidar, plot_feature
+from .plot import plot_lidar, plot_features
 
 # bring selected “core” things from crawl_trace
 from .crawl_trace import (
@@ -37,7 +37,7 @@ __all__ = [
 
     # plot
     "plot_lidar",
-    "plot_feature",
+    "plot_features",
 
     # core
     "AOI",
