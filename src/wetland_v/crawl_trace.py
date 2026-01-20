@@ -2,7 +2,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple, Union, List, Optional
+from typing import Tuple, Union, List, Optional, Dict
 import random
 import sys
 import warnings
@@ -82,7 +82,7 @@ def gcs_to_proj(poly: BaseGeometry) -> BaseGeometry:
 #######################################################
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AOI:
     geom_4326: BaseGeometry
     geom_3857: BaseGeometry
@@ -114,7 +114,7 @@ def aoi_from_geojson_geometry(geo_json: dict) -> AOI:
 DEFAULT_3DEP_URL = "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ThreeDEPIndex:
     """
     Container for the USGS 3DEP boundary index.
@@ -149,6 +149,7 @@ class ThreeDEPIndex:
     def years_from_name_last4(self) -> pd.Series:
         # matches your original: year = df["name"].str[-4:]
         return self.gdf["name"].astype(str).str[-4:]
+
 
 
 def load_3dep_index(url: str = DEFAULT_3DEP_URL, *, timeout: int = 60) -> ThreeDEPIndex:
@@ -256,7 +257,7 @@ def _parse_year_4digit(name: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LidarPoints:
     ground_xyz: np.ndarray
     veg_xyz: np.ndarray
@@ -371,7 +372,8 @@ def get_lidar_points_around_geometry_3857(geom_3857: BaseGeometry,
 
 
 
-def get_available_years(point_geom: BaseGeometry, index: ThreeDEPIndex, buffer_distance: float = 3) -> List[int]:
+def get_available_years(point_geom: BaseGeometry, buffer_distance: float = 3) -> List[int]:
+    index = load_3dep_index()
     geom_buff = point_geom.buffer(buffer_distance, cap_style=3)
     aoi_gcs, _ = proj_to_3857(geom_buff, "EPSG:3857")
     aoi_3857 = gcs_to_proj(aoi_gcs)
@@ -477,6 +479,32 @@ def one_step_crawl(
         endpoints[i, 4] = H
 
     return endpoints
+
+
+@dataclass(frozen=True, slots=True)
+class CrawlTraceConfig:
+    location: Tuple[float, float]          # EPSG:3857 (x, y)
+    N: int
+    min_height: float
+    max_height: float
+    window_size: Tuple[float, float]       # (L, W)
+    D: float
+    r: float
+    resolution: float
+    method: int
+    random_seed: int
+    sigma: float = 2.0
+    buffer_distance: float = 500.0
+    max_steps: int = 100
+    max_sample_points: int = 50_000
+
+@dataclass(frozen=True, slots=True)
+class CrawlTraceResult:
+    points: gpd.GeoDataFrame
+    traced_lines: gpd.GeoDataFrame
+    sampled_points_xyz: np.ndarray
+    year_of_record: Optional[int] = None
+    
 
 def Crawl_Trace(location, N, min_height, max_height, window_size, D, r, resolution, method, random_seed, sigma = 2.0):
     """
