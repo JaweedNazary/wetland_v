@@ -13,10 +13,10 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point, LineString, shape
 import numpy as np
-from .crs import proj_to_3857, gcs_to_proj
-from .usgs_3dep import ThreeDEPIndex
 import json
 import requests
+
+
 
 
 
@@ -32,9 +32,13 @@ except Exception:  # pragma: no cover
     prange = range  # fallback
 
 
-
-
-
+from .sampling import random_window_generator
+from .sampling import get_feature_direction
+from .sampling import get_points_within_r
+from .sampling import get_circle_mask
+from .sampling import grid_1D_interpolation
+from .sampling import smoother_data
+from .sampling import get_cross_section_mask
 
 
 CRSLike = Union[str, pyproj.CRS]
