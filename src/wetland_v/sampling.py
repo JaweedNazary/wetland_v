@@ -7,12 +7,7 @@ from shapely.geometry import LineString
 import geopandas as gpd
 import pandas as pd
 
-try:
-    from numba import njit, prange  # type: ignore
-except Exception:
-    prange = range
-
-
+from numba import njit, prange 
 
 def random_window_generator(bounds, num_lines=300, line_length=300):
     # num_lines: number of lines to be generated

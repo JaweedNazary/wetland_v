@@ -25,7 +25,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 # Optional numba support
 try:
-    from numba import prange  # type: ignore
+    from numba import prange, njit# type: ignore
     _HAS_NUMBA = True
 except Exception:  # pragma: no cover
     _HAS_NUMBA = False
