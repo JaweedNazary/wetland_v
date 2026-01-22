@@ -268,7 +268,6 @@ class LidarPoints:
 
 
 def get_lidar_points_around_geometry_3857(geom_3857: BaseGeometry,
-                                          index: ThreeDEPIndex,
                                           *,
                                           buffer_distance: float = 3.0,
                                           res: float = 2.0,
@@ -286,6 +285,7 @@ def get_lidar_points_around_geometry_3857(geom_3857: BaseGeometry,
 
     prefer_year expects a 4-digit year (e.g., 2019).
     """
+    index = load_3dep_index()
 
     prefer_year_n = _normalize_year(prefer_year)
 
@@ -506,7 +506,7 @@ class CrawlTraceResult:
     year_of_record: Optional[int] = None
     
 
-def Crawl_Trace(location, N, min_height, max_height, window_size, D, r, resolution, method, random_seed, sigma = 2.0):
+def crawl_trace(location, N, min_height, max_height, window_size, D, r, resolution, method, random_seed, sigma = 2.0):
     """
     Trace levee-like or channel-like linear features from high-resolution LiDAR
     within a 1000 m × 1000 m study tile centered at a user-specified location.
@@ -615,7 +615,8 @@ def Crawl_Trace(location, N, min_height, max_height, window_size, D, r, resoluti
     point_geom = Point(x, y)
     index = load_3dep_index()
     print(f'Downloading LiDAR data...')
-    pts = get_lidar_points_around_geometry_3857(point_geom, index, buffer_distance = 500, res = resolution, out_name="las")
+
+    pts = get_lidar_points_around_geometry_3857(point_geom, buffer_distance = 500, res = resolution, out_name="las")
 
     g_points = pts.ground_xyz
     all_points = pts.all_xyz
@@ -624,7 +625,8 @@ def Crawl_Trace(location, N, min_height, max_height, window_size, D, r, resoluti
     no_of_points.append(len(all_points))
     no_of_g_points.append(len(g_points))
     year_of_record.append(r_year)
-    file_size += all_points.nbytes / (1024**2)   # in MB  
+    file_size += all_points.nbytes / (1024**2)   # in MB
+    print(f'Estimated file size = {file_size:0.2f} MB')
 
 
     min_x = x-500
