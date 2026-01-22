@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 
 from shapely.geometry import Polygon, MultiPolygon
 
-
+import rasterio
 import json
 import re
 from dataclasses import dataclass
@@ -18,6 +18,65 @@ from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter
 import random
 from .sampling import smoother_data
+
+def plot_dem(file_path, target_grids = 600):
+    '''
+    Plotting the dem using plotly in 3D:
+    file_path = path to the dem file
+    target_grid = for speeding the plot process we are plotting a target grid instead of actual size of the raster
+    '''
+
+    with rasterio.open(file_path) as src: 
+        data = src.read(1)
+        transform = src.transform
+            
+    Z = np.asarray(data, dtype=np.float32)
+    ny, nx = Z.shape
+    
+    
+    cols = np.arange(nx)
+    rows = np.arange(ny)
+    
+    # Using rasterio Affine, these attributes exist: a, c, e, f
+    x = transform.c + (cols + 0.5) * transform.a
+    y = transform.f + (rows + 0.5) * transform.e  # often negative for north-up rasters
+    
+    Xi, Yi = np.meshgrid(x, y)
+    
+    
+    
+    
+    Z = Z.astype(float, copy=False)
+    Z[Z == -9999.0] = np.nan   # <-- your nodata value
+    
+    
+    
+    
+    # target around ~600x600 (safe for Plotly surface)
+    step = max(1, int(max(nx, ny) / target_grids))
+    
+    Zs = Z[::step, ::step]
+    
+    # If you have 1D x,y vectors:
+    xs = x[::step] if 'x' in globals() and x is not None else np.arange(0, nx, step)
+    ys = y[::step] if 'y' in globals() and y is not None else np.arange(0, ny, step)
+    
+    
+    
+    fig = go.Figure(go.Surface(
+        x=xs,
+        y=ys,
+        z=Zs,
+        colorscale="Earth_r",
+        contours=dict(z=dict(show=True, usecolormap=True, project_z=False))
+    ))
+    
+    # Optional: keep z-range sane (ignore any remaining outliers)
+    zmin = np.nanpercentile(Zs, 1)
+    zmax = np.nanpercentile(Zs, 99)
+    fig.update_layout(scene=dict(zaxis=dict(range=[zmin-300, zmax+300])), width=900, height=700)
+    
+    return fig
 
 
 def apply_surface_masks(xi, yi, Zi, geometry, ground_xyz):
