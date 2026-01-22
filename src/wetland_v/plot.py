@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 
 
 from shapely.geometry import Polygon, MultiPolygon
-from shapely import vectorized
+
 
 import json
 import re
@@ -19,18 +19,67 @@ from scipy.ndimage import gaussian_filter
 import random
 from .sampling import smoother_data
 
-    
-def mask_grid_by_geometry(xi, yi, Zi, geometry):
+
+def apply_surface_masks(xi, yi, Zi, geometry, ground_xyz):
     """
-    xi, yi, Zi are 2D arrays (meshgrid-style).
-    geometry is a shapely Polygon or MultiPolygon.
-    Returns Zi_masked where values outside geometry are NaN.
+    Combines:
+    - geometry mask
+    - point-density mask
     """
-    # vectorized.contains expects 1D arrays; pass the grid directly (it supports ndarray)
-    inside = vectorized.contains(geometry, xi, yi)  # shape == Zi.shape
+    from shapely import vectorized
+
     Zi_masked = Zi.copy()
-    Zi_masked[~inside] = np.nan
+
+    # Geometry mask
+    geom_mask = vectorized.contains(geometry, xi, yi)
+
+    # Point density mask (ground points only)
+    density_mask = point_density_mask(xi, yi, ground_xyz[:, :2])
+
+    # Combine both
+    final_mask = geom_mask & density_mask
+
+    Zi_masked[~final_mask] = np.nan
     return Zi_masked
+
+
+
+def point_density_mask(xi, yi, points_xy):
+    """
+    xi, yi: 2D meshgrid arrays
+    points_xy: (N, 2) array of point x,y coordinates
+
+    Returns:
+        mask: True where at least one point exists in the grid cell
+    """
+    # Grid resolution
+    dx = xi[0, 1] - xi[0, 0]
+    dy = yi[1, 0] - yi[0, 0]
+
+    x_min, x_max = xi.min(), xi.max()
+    y_min, y_max = yi.min(), yi.max()
+
+    # Compute grid indices for each point
+    ix = ((points_xy[:, 0] - x_min) / dx).astype(int)
+    iy = ((points_xy[:, 1] - y_min) / dy).astype(int)
+
+    # Valid indices only
+    valid = (
+        (ix >= 0) & (ix < xi.shape[1]) &
+        (iy >= 0) & (iy < yi.shape[0])
+    )
+
+    ix = ix[valid]
+    iy = iy[valid]
+
+    # Count points per cell
+    counts = np.zeros(xi.shape, dtype=np.int32)
+    np.add.at(counts, (iy, ix), 1)
+
+    return counts > 0
+
+
+
 
 def plot_lidar_masked(pts, geometry, plot_vegetation=True, veg_sample=50000):
     g_points = pts.ground_xyz
@@ -39,7 +88,11 @@ def plot_lidar_masked(pts, geometry, plot_vegetation=True, veg_sample=50000):
     xi, yi, Zi = smoother_data(g_points[:, 0], g_points[:, 1], g_points[:, 2])
 
     # Mask the surface to your geometry
-    Zi_masked = mask_grid_by_geometry(xi, yi, Zi, geometry)
+    Zi_masked = apply_surface_masks(
+        xi, yi, Zi,
+        geometry=geometry,
+        ground_xyz=g_points
+        )
 
     # Sample vegetation (guard for small arrays)
     if plot_vegetation and len(v_points) > 0:
