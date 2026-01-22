@@ -391,6 +391,228 @@ def get_available_years(point_geom: BaseGeometry, buffer_distance: float = 3) ->
 
     return years
 
+
+def build_pdal_dem_pipeline(
+    extent_epsg3857_wkt: str,
+    usgs_3dep_dataset_names: List[str],
+    *,
+    out_crs: int = 3857,
+    dem_resolution: float = 1.0,
+    dem_out_name: str = "dem",
+    dem_out_type: str = "tif",
+    dem_output_type: str = "idw",   # "idw", "min", "max", "mean", "median", "count", "stdev"
+    window_size: int = 0,           # 0 lets PDAL pick for some modes; for IDW you can set >0
+    radius: float = 0.0,            # for IDW / nearest-ish behaviors; 0 means PDAL default
+    ground_only: bool = True,
+    filter_noise: bool = False,
+    debug: bool = False,
+) -> Dict:
+    """
+    Build a PDAL pipeline that:
+      EPT (USGS public) -> (optional filters) -> reprojection -> writers.gdal (DEM GeoTIFF)
+
+    dem_output_type: PDAL writers.gdal 'output_type' options commonly include:
+      "idw", "min", "max", "mean", "median", "count", "stdev"
+    """
+    if dem_out_type.lower() not in {"tif", "tiff"}:
+        raise ValueError("dem_out_type must be 'tif' or 'tiff'.")
+
+    readers = []
+    for name in usgs_3dep_dataset_names:
+        url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{name}/ept.json"
+        readers.append(
+            {
+                "type": "readers.ept",
+                "filename": url,
+                "polygon": extent_epsg3857_wkt,
+                "requests": 3,
+                # EPT resolution controls point decimation coming from the server;
+                # for DEM generation, you typically want it <= dem_resolution (or smaller).
+                "resolution": max(dem_resolution * 0.5, 0.1),
+            }
+        )
+
+    pipeline = {"pipeline": readers}
+
+    # Optional: remove obvious junk classes (depends on dataset; keep off unless you know)
+    if filter_noise:
+        # This keeps only typical "non-noise" classes 0-18-ish; adjust to your liking.
+        # You can also do a strict ground-only later.
+        pipeline["pipeline"].append({"type": "filters.range", "limits": "Classification![7:7]"})
+        # 7 is often "noise" in LAS classification, but not always present.
+
+    # Keep ground only by default for DEM
+    if ground_only:
+        pipeline["pipeline"].append({"type": "filters.range", "limits": "Classification[2:2]"})
+
+    # Reproject (even though your AOI is 3857, keep this here for consistency)
+    pipeline["pipeline"].append({"type": "filters.reprojection", "out_srs": f"EPSG:{out_crs}"})
+
+    # Rasterize to DEM
+    writer = {
+        "type": "writers.gdal",
+        "filename": f"{dem_out_name}.{dem_out_type}",
+        "resolution": dem_resolution,
+        "output_type": dem_output_type,
+        "gdaldriver": "GTiff",
+        # Setting bounds can help ensure consistent raster extent;
+        # PDAL will infer from points if omitted, but AOI bounds often preferred.
+        # "bounds": "([minx,maxx],[miny,maxy])"  # optional (see below in caller)
+    }
+
+    # Optional tuning knobs for some output types
+    if window_size and int(window_size) > 0:
+        writer["window_size"] = int(window_size)
+    if radius and float(radius) > 0:
+        writer["radius"] = float(radius)
+
+    pipeline["pipeline"].append(writer)
+
+    if debug:
+        pipeline["debug"] = True
+
+    return pipeline
+
+
+def _require_dem_deps():
+    try:
+        import pdal  # noqa: F401
+    except Exception as e:
+        raise ImportError(
+            "PDAL required. Install with something like:\n"
+            "  pip install pdal\n"
+            "Or your project extra:\n"
+            "  pip install -e \".[lidar]\""
+        ) from e
+
+
+def _normalize_year(y):
+    if y is None:
+        return None
+    y = int(y)
+    if y < 100:
+        return 2000 + y
+    return y
+
+
+def _parse_year_4digit(name: str) -> Optional[int]:
+    m = re.search(r"(19\d{2}|20\d{2})", name)
+    return int(m.group(1)) if m else None
+
+
+@dataclass(frozen=True, slots=True)
+class DemResult:
+    dem_path: Path
+    most_recent_year: Optional[int]
+    datasets: List[str]
+
+
+def get_dem_around_geometry_3857(
+    geom_3857: BaseGeometry,
+    *,
+    buffer_distance: float = 3.0,
+    dem_resolution: float = 1.0,
+    out_name: str = "dem",
+    out_dir: str | Path = ".",
+    prefer_year: Optional[int] = None,
+    dem_output_type: str = "idw",
+    window_size: int = 0,
+    radius: float = 0.0,
+    ground_only: bool = True,
+    filter_noise: bool = False,
+    debug: bool = False,
+) -> DemResult:
+    """
+    EPSG:3857-only workflow.
+
+    - Buffers geom (meters)
+    - Finds intersecting 3DEP polygons (via your existing load_3dep_index())
+    - Runs PDAL EPT -> writers.gdal GeoTIFF (DEM)
+    - Returns DemResult with output path + most recent year + dataset names
+
+    prefer_year expects a 4-digit year (e.g., 2019).
+    """
+
+    # You already have this in your project:
+    # index.geometries_3857  (iterable of shapely geoms)
+    # index.names (pandas Series / list-like of dataset name strings)
+    index = load_3dep_index()
+
+    prefer_year_n = _normalize_year(prefer_year)
+
+    _require_dem_deps()
+    import pdal
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dem_path = out_dir / f"{out_name}.tif"
+
+    aoi = geom_3857.buffer(buffer_distance, cap_style=3)
+    aoi_wkt = aoi.wkt
+
+    datasets: list[str] = []
+    most_recent: Optional[int] = None
+
+    for i, poly in enumerate(index.geometries_3857):
+        if not poly.intersects(aoi):
+            continue
+
+        name = str(index.names.iloc[i]) if hasattr(index.names, "iloc") else str(index.names[i])
+        yr = _parse_year_4digit(name)
+
+        if prefer_year_n is not None:
+            if yr is None or yr != prefer_year_n:
+                continue
+
+        datasets.append(name)
+        if yr is not None:
+            most_recent = yr if (most_recent is None or yr > most_recent) else most_recent
+
+    if debug:
+        print(f"AOI bounds (3857): {aoi.bounds}")
+        print(f"Intersecting datasets: {len(datasets)}")
+        if datasets:
+            print("First few:", datasets[:5])
+        print("Most recent year:", most_recent)
+
+    if not datasets:
+        raise ValueError("No 3DEP polygon intersects the AOI (or year filter excluded all).")
+
+    # Build pipeline
+    pipeline_dict = build_pdal_dem_pipeline(
+        aoi_wkt,
+        datasets,
+        out_crs=3857,
+        dem_resolution=dem_resolution,
+        dem_out_name=str(dem_path.with_suffix("")),
+        dem_out_type="tif",
+        dem_output_type=dem_output_type,
+        window_size=window_size,
+        radius=radius,
+        ground_only=ground_only,
+        filter_noise=filter_noise,
+        debug=debug,
+    )
+
+    # (Optional but often helpful) force DEM bounds to AOI bounds for consistent extents:
+    # PDAL expects: "([minx,maxx],[miny,maxy])"
+    minx, miny, maxx, maxy = aoi.bounds
+    pipeline_dict["pipeline"][-1]["bounds"] = f"([{minx},{maxx}],[{miny},{maxy}])"
+
+    pipe = pdal.Pipeline(json.dumps(pipeline_dict))
+    pipe.execute()
+
+    if not dem_path.exists():
+        raise FileNotFoundError(f"Expected DEM not found: {dem_path}")
+
+    return DemResult(
+        dem_path=dem_path,
+        most_recent_year=most_recent,
+        datasets=datasets,
+    )
+
+
+
 ##############################################################
 ############# CRAWL TRACE                             ########
 ##############################################################
