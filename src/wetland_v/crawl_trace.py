@@ -267,7 +267,7 @@ class LidarPoints:
     las_path: Path
 
 
-def get_lidar_points_around_geometry_3857(geom_3857: BaseGeometry,
+def get_lidar_points(geom_3857: BaseGeometry,
                                           *,
                                           buffer_distance: float = 3.0,
                                           res: float = 2.0,
