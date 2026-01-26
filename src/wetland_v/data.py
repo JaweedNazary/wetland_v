@@ -6,6 +6,8 @@ import plotly.graph_objects as go
 
 
 from shapely.geometry import Polygon, MultiPolygon, box
+from shapely.geometry.base import BaseGeometry
+
 
 import rasterio
 from rasterio.merge import merge
@@ -23,6 +25,9 @@ from pathlib import Path
 import numpy as np
 from shapely.geometry import mapping
 from shapely.ops import transform as shp_transform
+from shapely import wkt as shp_wkt
+from shapely.geometry import mapping
+
 from pyproj import Transformer
 
 from pystac_client import Client
@@ -294,6 +299,8 @@ def compute_OPERA(aoi_bbox, files, product="HLS", out_dir="opera_outputs"):
 ##              FEMA FLOOD MAP                 ##
 #################################################
 
+FEMA_LAYER_QUERY_URL = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query"
+
 
 def arcgis_query(url: str, params: Dict[str, Any], timeout: int = 60, retries: int = 4) -> Dict[str, Any]:
     """ArcGIS REST query with a small retry (helps with occasional 500s)."""
@@ -421,4 +428,89 @@ def fetch_FEMA(object_ids: List[int], chunk_size: int = 150) -> Dict[str, Any]:
         )
 
     return {"type": "FeatureCollection", "features": gj_features}
+
+
+#################################################
+##             SSURGO SOIL DATA                ##
+#################################################
+
+SDA = "https://SDMDataAccess.sc.egov.usda.gov/Tabular/post.rest"
+
+
+
+def proj_to_3857(poly: BaseGeometry, orig_crs):
+    """
+    Project a geometry from orig_crs into:
+      - EPSG:4326 (WGS84)
+      - EPSG:3857 (Web Mercator)
+
+    Returns (geom_4326, geom_3857).
+    """
+    wgs84 = pyproj.CRS("EPSG:4326")
+    web_mercator = pyproj.CRS("EPSG:3857")
+
+    orig = pyproj.CRS.from_user_input(orig_crs)
+    to_4326 = pyproj.Transformer.from_crs(orig, wgs84, always_xy=True).transform
+    to_3857 = pyproj.Transformer.from_crs(orig, web_mercator, always_xy=True).transform
+
+    return transform(to_4326, poly), transform(to_3857, poly)
+
+
+
+def sda_query(sql: str, timeout=180):
+    r = requests.post(
+        SDA,
+        data={"service": "query", "request": "query", "format": "JSON+COLUMNNAME", "query": sql},
+        timeout=timeout,
+    )
+    if not r.ok:
+        raise RuntimeError(f"SDA HTTP {r.status_code}\n{r.text}\n\nSQL was:\n{sql}")
+
+    data = r.json()
+    if isinstance(data, dict) and "Table" in data:
+        data = data["Table"]
+    cols = data[0]
+    return [{cols[i]: row[i] for i in range(len(cols))} for row in data[1:]]
+
+
+def download_SSURGO(aoi_wkt_4326: str):
+    aoi = aoi_wkt_4326.replace("'", "''")  # escape for SQL literal
+
+    sql = f"""
+    WITH hydric AS (
+      SELECT
+        mukey,
+        SUM(CASE WHEN hydricrating = 'YES' THEN CAST(comppct_r AS float) ELSE 0 END) AS pct_hydric
+      FROM component
+      GROUP BY mukey
+    )
+    SELECT
+      p.mupolygonkey,
+      p.mukey,
+      p.musym,
+      p.areasymbol,
+      h.pct_hydric,
+      p.mupolygongeo.STAsText() AS wkt_geom
+    FROM mupolygon AS p
+    LEFT JOIN hydric AS h
+      ON h.mukey = p.mukey
+    WHERE p.mupolygonkey IN (
+      SELECT mupolygonkey
+      FROM SDA_Get_Mupolygonkey_from_intersection_with_WktWgs84('{aoi}')
+    );
+    """
+
+    rows = sda_query(sql)
+
+    feats = []
+    for r in rows:
+        geom = shp_wkt.loads(r.pop("wkt_geom"))
+
+        # pct_hydric might be None if something is missing; normalize to float when present
+        pct = r.get("pct_hydric")
+        r["pct_hydric"] = float(pct) if pct is not None else None
+
+        feats.append({"type": "Feature", "geometry": mapping(geom), "properties": r})
+
+    return {"type": "FeatureCollection", "features": feats}
 
