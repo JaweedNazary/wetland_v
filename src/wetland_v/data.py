@@ -34,7 +34,38 @@ from pystac_client import Client
 import planetary_computer as pc
 import earthaccess
 
+import geopandas as gpd
 
+# this file need to be in this folder
+huc12_MO = gpd.read_file("huc12.shp")
+huc12_MO= huc12_MO.to_crs("EPSG:4326")
+
+#################################################
+##  GET HUC 12 Polygons                        ##
+#################################################
+
+def get_huc12_by_name(name:str):
+
+    if name in np.array(huc12_MO["name"]):
+        huc12_selection = huc12_MO[huc12_MO["name"]==name]
+        geom = huc12_selection.geometry.iloc[0]
+        aoi = huc12_selection.geometry.iloc[0].bounds
+    else:
+        print("No such watershed in the records. Try another watershed or check the spelling.")
+
+    return huc12_geom
+
+
+def get_huc12_by_code(code:str):
+
+    if code in np.array(huc12_MO["huc12"]):
+        huc12_selection = huc12_MO[huc12_MO["huc12"]==code]
+        geom = huc12_selection.geometry.iloc[0]
+        aoi = huc12_selection.geometry.iloc[0].bounds
+    else:
+        print("No such HUC12 in the records. Double check if this is a valid Hydrologic Unit Code.")
+
+    return huc12_geom
 
 #################################################
 ##  LAND USE LAND COVER from SENTINEL 1 & 2    ##
