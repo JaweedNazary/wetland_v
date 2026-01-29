@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>"Drag to compare" role="slider"</title>
+  <title>Drag to compare</title>
   <style>
     :root {
       --bg: #111;
@@ -19,11 +19,12 @@
       color: var(--text);
     }
     h3 { margin: 0 0 12px 0; font-weight: 700; }
+
     .controls {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 10px;
-      max-width: 1100px;
+      max-width: 1600px;
       margin-bottom: 12px;
     }
     .control label { display: block; font-size: 14px; margin-bottom: 6px; }
@@ -36,13 +37,12 @@
       font-size: 16px;
     }
 
-    /* Swipe container */
     #swipe-container {
       position: relative;
       width: 100%;
       max-width: 1600px;
       height: 100vh;
-      min-height: 600px;
+      min-height: 1600px;
       border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
@@ -50,16 +50,14 @@
       touch-action: none;
     }
 
-    /* Image layers */
     .plot-layer {
       position: absolute;
       top: 10px; left: 10px; right: 10px; bottom: 10px;
-      z-index: 1;
-      pointer-events: none; /* important: handle gets the drag */
+      pointer-events: none;
     }
+
     .layer-img {
       position: absolute;
-      z-index: 2;   /* <-- colon, not equals */
       inset: 0;
       width: 100%;
       height: 100%;
@@ -68,23 +66,25 @@
       -webkit-user-drag: none;
     }
 
+    /* BEFORE is the base image */
+    #before-img { z-index: 1; }
 
-  
-    /* After clip wrapper: full size, clipped (prevents "zoom") */
+    /* AFTER is on top, clipped */
     #after-clip {
       position: absolute;
-      top: 0; left: 0; right: 0; bottom: 0;
+      inset: 0;
       z-index: 2;
-      overflow: visible; /* not needed anymore */
-      clip-path: inset(0 50% 0 0); /* show left 50% initially */
+      overflow: hidden;              /* IMPORTANT */
+      clip-path: inset(0 0 0 50%);   /* show RIGHT half initially */
       will-change: clip-path;
     }
 
-    /* Ensure before is below after */
-    #before-img { z-index: 1; }
-    #after-img  { z-index: 2; }
+    /* Keep the visible part of AFTER anchored to the RIGHT */
+    #after-img {
+      z-index: 1;
+      object-position: right center; /* IMPORTANT */
+    }
 
-    /* Handle */
     #swipe-handle {
       position: absolute;
       top: 0;
@@ -161,7 +161,6 @@
 
   <div id="meta"></div>
 
-  <!-- Option 1: inline JS (works as-is) -->
   <script>
     const years = [
       1984, 1985, 1986, 1987, 1988, 1989,
@@ -174,8 +173,8 @@
       2020, 2021, 2022, 2023, 2024, 2025
     ];
 
-    const DEFAULT_BEFORE = years[1];
-    const DEFAULT_AFTER = years[years.length - 1];
+    const DEFAULT_BEFORE = years[6];
+    const DEFAULT_AFTER  = years[years.length - 1];
 
     const beforeSel = document.getElementById("before-year");
     const afterSel  = document.getElementById("after-year");
@@ -203,13 +202,14 @@
       meta.textContent = `Before: ${beforeYear} | After: ${afterYear}`;
     }
 
+    // Clip LEFT side of AFTER, keep RIGHT side visible
     function setPct(pct) {
       pct = Math.max(0, Math.min(100, pct));
 
-      // Clip from the RIGHT side: when pct=50, right inset=50%
-      const rightInset = 100 - pct;
-      afterClip.style.clipPath = `inset(0 ${rightInset}% 0 0)`;
+      // Keep RIGHT side of AFTER. Hide everything LEFT of the handle.
+      afterClip.style.clipPath = `inset(0 0 0 ${pct}%)`;
 
+      // Handle follows the pointer normally
       handle.style.left = `${pct}%`;
       handle.setAttribute("aria-valuenow", String(Math.round(pct)));
     }
@@ -217,6 +217,7 @@
 
     setOptions(beforeSel, DEFAULT_BEFORE);
     setOptions(afterSel, DEFAULT_AFTER);
+
     beforeSel.addEventListener("change", updateImages);
     afterSel.addEventListener("change", updateImages);
 
@@ -260,8 +261,5 @@
       if (e.key === "ArrowRight") setPct(now + step);
     });
   </script>
-
-  <!-- Option 2: move JS to swipe.js instead (uncomment if you do that) -->
-  <!-- <script src="./swipe.js"></script> -->
 </body>
 </html>
