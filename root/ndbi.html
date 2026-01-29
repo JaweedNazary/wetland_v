@@ -41,8 +41,9 @@
       position: relative;
       width: 100%;
       max-width: 1600px;
-      height: 100vh;
-      min-height: 1600px;
+      aspect-ratio: 3508 / 4961;
+      height: auto;
+      max-height: 2000px;
       border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
@@ -52,7 +53,7 @@
 
     .plot-layer {
       position: absolute;
-      top: 10px; left: 10px; right: 10px; bottom: 10px;
+      inset: 0;
       pointer-events: none;
     }
 
@@ -61,7 +62,8 @@
       inset: 0;
       width: 100%;
       height: 100%;
-      object-fit: contain;
+      object-fit: cover;
+      object-position: center;
       user-select: none;
       -webkit-user-drag: none;
     }
@@ -78,12 +80,9 @@
       clip-path: inset(0 0 0 50%);   /* show RIGHT half initially */
       will-change: clip-path;
     }
-
-    /* Keep the visible part of AFTER anchored to the RIGHT */
-    #after-img {
-      z-index: 1;
-      object-position: right center; /* IMPORTANT */
-    }
+    
+    #after-img { z-index: 1; object-position: center; }
+    #before-img { z-index: 1; object-position: center; }
 
     #swipe-handle {
       position: absolute;
@@ -173,7 +172,7 @@
       2020, 2021, 2022, 2023, 2024, 2025
     ];
 
-    const DEFAULT_BEFORE = years[6];
+    const DEFAULT_BEFORE = years[1];
     const DEFAULT_AFTER  = years[years.length - 1];
 
     const beforeSel = document.getElementById("before-year");
