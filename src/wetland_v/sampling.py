@@ -8,7 +8,7 @@ import geopandas as gpd
 import pandas as pd
 
 
-from numba import njit, prange 
+# from numba import njit, prange 
 
 def random_window_generator(bounds, num_lines=300, line_length=300):
     # num_lines: number of lines to be generated
@@ -186,7 +186,7 @@ def smoother_data(x_lidar, y_lidar, z_lidar):
     return Xi, Yi, Zi_smooth
 
 
-@njit
+#@njit
 def cross_3d(u: np.ndarray, v: np.ndarray) -> np.ndarray:
     result = np.empty(3, dtype=np.float64)
     result[0] = u[1]*v[2] - u[2]*v[1]
@@ -194,7 +194,7 @@ def cross_3d(u: np.ndarray, v: np.ndarray) -> np.ndarray:
     result[2] = u[0]*v[1] - u[1]*v[0]
     return result
 
-@njit
+#@njit
 def get_cross_section_mask(lines: np.ndarray, points: np.ndarray, thickness: float = 10) -> np.ndarray:
     M = lines.shape[0]  # number of lines
 

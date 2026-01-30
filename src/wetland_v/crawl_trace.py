@@ -24,12 +24,12 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 # Optional numba support
-try:
-    from numba import prange, njit# type: ignore
-    _HAS_NUMBA = True
-except Exception:  # pragma: no cover
-    _HAS_NUMBA = False
-    prange = range  # fallback
+# try:
+#    from numba import prange, njit# type: ignore
+#    _HAS_NUMBA = True
+#except Exception:  # pragma: no cover
+#    _HAS_NUMBA = False
+#    prange = range  # fallback
 
 
 from .sampling import random_window_generator
