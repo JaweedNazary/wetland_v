@@ -258,11 +258,10 @@ def build_pdal_pipeline(
                 "rigidness": 3,         # Cloth stiffness (higher = ignores small objects)
                 "iterations": 500}     # Max solver iterations (safety cap)
                 
-            
             stages.append({"type": "filters.csf", **params})
             
         elif reclassify_ground == "smrf":
-             params = {
+            params = {
                 "cell": 1.0,            # Grid cell size for morphological operations
                 "scalar": 1.25,         # Scales elevation tolerance as window grows
                 "slope": 0.15,          # Allowed terrain steepness (rise/run)
@@ -270,7 +269,6 @@ def build_pdal_pipeline(
                 "window": 18.0,         # Maximum neighborhood size
                 "returns": "last,only"}  # Favor ground returns
                 
-            
             stages.append({"type": "filters.smrf", **params})
             
         elif reclassify_ground == "pmf":
