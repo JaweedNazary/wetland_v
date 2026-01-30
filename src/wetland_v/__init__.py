@@ -57,7 +57,7 @@ from .crawl_trace import (
     proj_to_3857,
     gcs_to_proj,
     get_available_years,
-    get_lidar_points_around_geometry_3857
+    get_lidar_points
 )
 
 
@@ -82,6 +82,6 @@ __all__ = [
     "proj_to_3857",
     "gcs_to_proj",
     "get_available_years",
-    "get_lidar_points_around_geometry_3857",
+    "get_lidar_points",
 ]
 __version__ = "0.1.0"
