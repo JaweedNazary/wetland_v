@@ -256,8 +256,8 @@ def build_pdal_pipeline(
                 "smooth": True,         # Post-process slopes for smoother terrain
                 "step": 0.65,           # Cloth simulation time step (stability vs speed)
                 "rigidness": 3,         # Cloth stiffness (higher = ignores small objects)
-                "iterations": 500       # Max solver iterations (safety cap)
-                }
+                "iterations": 500}     # Max solver iterations (safety cap)
+                
             
             stages.append({"type": "filters.csf", **params})
             
@@ -268,8 +268,8 @@ def build_pdal_pipeline(
                 "slope": 0.15,          # Allowed terrain steepness (rise/run)
                 "threshold": 0.5,       # Elevation difference cutoff for ground
                 "window": 18.0,         # Maximum neighborhood size
-                "returns": "last,only"  # Favor ground returns
-                }
+                "returns": "last,only"}  # Favor ground returns
+                
             
             stages.append({"type": "filters.smrf", **params})
             
@@ -281,8 +281,8 @@ def build_pdal_pipeline(
                 "max_distance": 2.5,      # Max allowed elevation difference
                 "max_window_size": 33,    # Largest morphological window
                 "exponential": True,      # Faster window growth (fewer iterations)
-                "returns": "last,only"    # Ground-favoring returns
-                }
+                "returns": "last,only"}    # Ground-favoring returns
+                
             stages.append({"type": "filters.pmf", **params})
             
         else:
