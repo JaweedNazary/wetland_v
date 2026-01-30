@@ -401,9 +401,9 @@ def get_lidar_points(geom_3857: BaseGeometry,
             pc_out_type = "las",
             debug = False,
             # Optional tuning knobs:
-            smrf: Optional[Dict] = None,
-            csf: Optional[Dict] = None,
-            pmf: Optional[Dict] = None,) -> Dict:
+            #smrf: Optional[Dict] = None,
+            #csf: Optional[Dict] = None,
+            #pmf: Optional[Dict] = None,) -> Dict:
 
 
 
