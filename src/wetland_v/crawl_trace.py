@@ -404,7 +404,7 @@ def get_lidar_points(geom_3857: BaseGeometry,
             #smrf: Optional[Dict] = None,
             #csf: Optional[Dict] = None,
             #pmf: Optional[Dict] = None,
-            ) -> Dict:
+            )
 
 
 
