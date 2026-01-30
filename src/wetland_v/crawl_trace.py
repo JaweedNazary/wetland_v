@@ -353,7 +353,7 @@ def get_lidar_points(geom_3857: BaseGeometry,
                                           prefer_year: Optional[int] = None,
                                           reclassify_ground:GroundMethod = "none",
                                           remove_noise: bool=False,     
-                                          run_outlier: bool=False),
+                                          run_outlier: bool=False,
                                           debug: bool = False,):
     """
     EPSG:3857-only workflow.
@@ -717,7 +717,7 @@ def crawl_trace(location, N, min_height, max_height, window_size, D, r, resoluti
     index = load_3dep_index()
     print(f'Downloading LiDAR data...')
 
-    pts = get_lidar_points_around_geometry_3857(point_geom, buffer_distance = 500, res = resolution, out_name="las")
+    pts = get_lidar_points(point_geom, buffer_distance = 500, res = resolution, out_name="las")
 
     g_points = pts.ground_xyz
     all_points = pts.all_xyz
