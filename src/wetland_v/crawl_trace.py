@@ -175,7 +175,7 @@ def load_3dep_index(url: str = DEFAULT_3DEP_URL, *, timeout: int = 60) -> ThreeD
 ##############################################################
 
 
-GroundMethod = Literal["smrf", "csf", "pmf"]
+GroundMethod = Literal["none", "smrf", "csf", "pmf"]
 
 
 def build_pdal_pipeline(
@@ -184,10 +184,9 @@ def build_pdal_pipeline(
     pc_resolution: float,
     *,
     out_crs: int = 3857,
-    ground_method: GroundMethod = "smrf",
     # If your source already has good classes and you only want to extract ground,
     # leave reclassify_ground=False.
-    reclassify_ground: bool = False,
+    reclassify_ground: GroundMethod = "none",
     # Noise handling:
     remove_noise: bool = True,
     run_outlier: bool = True,
@@ -195,12 +194,7 @@ def build_pdal_pipeline(
     save_pointcloud: bool = True,
     pc_out_name: str = "ground",
     pc_out_type: Literal["las", "laz"] = "laz",
-    debug: bool = False,
-    # Optional tuning knobs:
-    # smrf: Optional[Dict] = None,
-    # csf: Optional[Dict] = None,
-    # pmf: Optional[Dict] = None,
-    ) -> Dict:
+    debug: bool = False) -> Dict:
     
     readers = []
     for name in usgs_3dep_dataset_names:
@@ -245,7 +239,7 @@ def build_pdal_pipeline(
 
     # If you want to *reclassify* ground, preserve original classes first,
     # so you can still extract water/vegetation later from OrigClass.
-    if reclassify_ground:
+    if reclassify_ground != "none":
         stages.extend(
             [
                 {"type": "filters.ferry", "dimensions": "Classification=>OrigClass"},
@@ -253,15 +247,44 @@ def build_pdal_pipeline(
             ]
         )
 
-        if ground_method == "smrf":
-            params = smrf or {}
-            stages.append({"type": "filters.smrf", **params})
-        elif ground_method == "csf":
-            params = csf or {}
+        if reclassify_ground == "csf":
+            params = {
+                "resolution": 0.5,      # Cloth grid spacing (smaller = more terrain detail)
+                "returns": "last,only", # Use ground-likely laser returns
+                "threshold": 0.45,      # Ground / non-ground classification sensitivity
+                "hdiff": 0.25,          # Max local height difference allowed for ground
+                "smooth": True,         # Post-process slopes for smoother terrain
+                "step": 0.65,           # Cloth simulation time step (stability vs speed)
+                "rigidness": 3,         # Cloth stiffness (higher = ignores small objects)
+                "iterations": 500       # Max solver iterations (safety cap)
+            }
+            
             stages.append({"type": "filters.csf", **params})
-        elif ground_method == "pmf":
-            params = pmf or {}
+            
+        elif reclassify_ground == "smrf":
+             params = {
+                "cell": 1.0,            # Grid cell size for morphological operations
+                "scalar": 1.25,         # Scales elevation tolerance as window grows
+                "slope": 0.15,          # Allowed terrain steepness (rise/run)
+                "threshold": 0.5,       # Elevation difference cutoff for ground
+                "window": 18.0,         # Maximum neighborhood size
+                "returns": "last,only"  # Favor ground returns
+            }
+            
+            stages.append({"type": "filters.smrf", **params})
+            
+        elif reclassify_ground == "pmf":
+            params = {
+                "cell_size": 1.0,         # Base grid resolution
+                "slope": 1.0,             # Height threshold growth rate (terrain ruggedness)
+                "initial_distance": 0.15, # Vertical noise tolerance
+                "max_distance": 2.5,      # Max allowed elevation difference
+                "max_window_size": 33,    # Largest morphological window
+                "exponential": True,      # Faster window growth (fewer iterations)
+                "returns": "last,only"    # Ground-favoring returns
+            }
             stages.append({"type": "filters.pmf", **params})
+            
         else:
             raise ValueError(f"Unsupported ground_method: {ground_method}")
 
@@ -324,15 +347,12 @@ class LidarPoints:
 
 
 def get_lidar_points(geom_3857: BaseGeometry,
-                     *,
-                     buffer_distance: float = 3.0,
-                     res: float = 2.0,
-                     out_name: str = "sample_line",
-                     out_dir: str | Path = ".",
-                     prefer_year: Optional[int] = None,
-                     reclassify_ground: bool = False,
-                     remove_noise:bool = False,
-                     run_outlier:bool = False,
+                                          *,
+                                          buffer_distance: float = 3.0,
+                                          res: float = 2.0,
+                                          out_name: str = "sample_line",
+                                          out_dir: str | Path = ".",
+                                          prefer_year: Optional[int] = None,
                                           debug: bool = False,):
     """
     EPSG:3857-only workflow.
@@ -395,19 +415,13 @@ def get_lidar_points(geom_3857: BaseGeometry,
             datasets,
             res,
             out_crs = 3857,
-            ground_method = "smrf",
-            reclassify_ground = reclassify_ground,
-            remove_noise = remove_noise,
-            run_outlier = run_outlier,
+            reclassify_ground = "smrf",
+            remove_noise = False,
+            run_outlier = False,
             save_pointcloud = True,
             pc_out_name = str(las_path.with_suffix("")),
             pc_out_type = "las",
-            debug = False,
-            # Optional tuning knobs:
-            #smrf: Optional[Dict] = None,
-            #csf: Optional[Dict] = None,
-            #pmf: Optional[Dict] = None,
-            )
+            debug = False)
 
 
 
