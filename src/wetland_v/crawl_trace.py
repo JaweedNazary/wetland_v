@@ -197,9 +197,10 @@ def build_pdal_pipeline(
     pc_out_type: Literal["las", "laz"] = "laz",
     debug: bool = False,
     # Optional tuning knobs:
-    smrf: Optional[Dict] = None,
-    csf: Optional[Dict] = None,
-    pmf: Optional[Dict] = None,) -> Dict:
+    # smrf: Optional[Dict] = None,
+    # csf: Optional[Dict] = None,
+    # pmf: Optional[Dict] = None,
+    ) -> Dict:
     
     readers = []
     for name in usgs_3dep_dataset_names:
