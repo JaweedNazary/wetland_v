@@ -140,9 +140,10 @@ def point_density_mask(xi, yi, points_xy):
 
 
 
-def plot_lidar_masked(pts, geometry, plot_vegetation=True, veg_sample=50000):
+def plot_lidar_masked(pts, geometry, plot_vegetation=True, plot_water = True, sample=50000):
     g_points = pts.ground_xyz
     v_points = pts.veg_xyz
+    water_points = pts.water_xyz
 
     xi, yi, Zi = smoother_data(g_points[:, 0], g_points[:, 1], g_points[:, 2])
 
@@ -155,10 +156,20 @@ def plot_lidar_masked(pts, geometry, plot_vegetation=True, veg_sample=50000):
 
     # Sample vegetation (guard for small arrays)
     if plot_vegetation and len(v_points) > 0:
-        k = min(veg_sample, len(v_points))
+        k = min(sample, len(v_points))
         idx = random.sample(range(len(v_points)), k=k)
         selected_veg = v_points[idx]
 
+
+    # Sample vegetation (guard for small arrays)
+    if plot_water and len(water_points) > 0:
+        k = min(sample, len(water_points))
+        idx = random.sample(range(len(water_points)), k=k)
+        selected_water = water_points[idx]
+
+
+
+        
     fig = go.Figure()
 
     fig.add_trace(
@@ -184,6 +195,18 @@ def plot_lidar_masked(pts, geometry, plot_vegetation=True, veg_sample=50000):
                 mode='markers',
                 marker=dict(color="green", size=0.5, opacity=0.2),
                 name='Vegetation points'
+            )
+        )
+
+    if plot_water and len(water_points) > 0:
+        fig.add_trace(
+            go.Scatter3d(
+                x=selected_water[:, 0],
+                y=selected_water[:, 1],
+                z=selected_water[:, 2],
+                mode='markers',
+                marker=dict(color="blue", size=1.0, opacity=0.2),
+                name='Water points'
             )
         )
 

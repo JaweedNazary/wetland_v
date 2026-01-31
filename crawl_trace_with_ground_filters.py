@@ -2,7 +2,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple, Union, List, Optional, Dict
+from typing import Tuple, Union, List, Optional, Dict, Literal
 import random
 import sys
 import warnings
@@ -24,12 +24,12 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 # Optional numba support
-try:
-    from numba import prange, njit# type: ignore
-    _HAS_NUMBA = True
-except Exception:  # pragma: no cover
-    _HAS_NUMBA = False
-    prange = range  # fallback
+# try:
+#    from numba import prange, njit# type: ignore
+#    _HAS_NUMBA = True
+#except Exception:  # pragma: no cover
+#    _HAS_NUMBA = False
+#    prange = range  # fallback
 
 
 from .sampling import random_window_generator
@@ -174,19 +174,28 @@ def load_3dep_index(url: str = DEFAULT_3DEP_URL, *, timeout: int = 60) -> ThreeD
 ##### LIDAR DATA DOWNLOAD                            #########
 ##############################################################
 
+
+GroundMethod = Literal["none", "smrf", "csf", "pmf"]
+
+
 def build_pdal_pipeline(
-    extent_epsg3857_wkt: str,
+    extent_wkt: str,
     usgs_3dep_dataset_names: List[str],
     pc_resolution: float,
     *,
-    filter_noise: bool = False,
-    reclassify: bool = False,
-    save_pointcloud: bool = True,
     out_crs: int = 3857,
-    pc_out_name: str = "filter_test",
-    pc_out_type: str = "laz",
-    debug: bool = False,
-) -> Dict:
+    # If your source already has good classes and you only want to extract ground,
+    # leave reclassify_ground=False.
+    reclassify_ground: GroundMethod = "none",
+    # Noise handling:
+    remove_noise: bool = True,
+    run_outlier: bool = True,
+    # Output:
+    save_pointcloud: bool = True,
+    pc_out_name: str = "ground",
+    pc_out_type: Literal["las", "laz"] = "laz",
+    debug: bool = False) -> Dict:
+    
     readers = []
     for name in usgs_3dep_dataset_names:
         url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{name}/ept.json"
@@ -194,30 +203,95 @@ def build_pdal_pipeline(
             {
                 "type": "readers.ept",
                 "filename": url,
-                "polygon": extent_epsg3857_wkt,
+                "polygon": extent_wkt,
                 "requests": 3,
                 "resolution": pc_resolution,
             }
         )
 
-    pipeline = {"pipeline": readers}
+    stages = []
+    stages.extend(readers)
 
-    if filter_noise:
-        pipeline["pipeline"].append({"type": "filters.range", "limits": "Classification[2:2]"})
+    # Merge multiple EPT sources into a single view before classification/extraction.
+    stages.append({"type": "filters.merge"})
 
-    if reclassify:
-        pipeline["pipeline"].extend(
+    # (Optional) Outlier detection marks noise points as Classification=7
+    # per PDAL docs. You can remove them downstream. :contentReference[oaicite:5]{index=5}
+    if run_outlier:
+        stages.append(
+            {
+                "type": "filters.outlier",
+                "method": "statistical",
+                "mean_k": 12,
+                "multiplier": 3.0,
+            }
+        )
+
+    # Remove noise points (commonly class 7; optionally also exclude class 18)
+    # PDAL workshop demonstrates filtering out Classification == 7. :contentReference[oaicite:6]{index=6}
+    if remove_noise:
+        stages.append(
+            {
+                "type": "filters.expression",
+                "expression": "Classification != 7 && Classification != 18",
+            }
+        )
+
+    # If you want to *reclassify* ground, preserve original classes first,
+    # so you can still extract water/vegetation later from OrigClass.
+    if reclassify_ground != "none":
+        stages.extend(
             [
+                {"type": "filters.ferry", "dimensions": "Classification=>OrigClass"},
                 {"type": "filters.assign", "value": "Classification = 0"},
-                {"type": "filters.smrf"},
-                {"type": "filters.range", "limits": "Classification[2:2]"},
             ]
         )
 
-    pipeline["pipeline"].append({"type": "filters.reprojection", "out_srs": f"EPSG:{out_crs}"})
+        if reclassify_ground == "csf":
+            params = {
+                "resolution": 0.5,      # Cloth grid spacing (smaller = more terrain detail)
+                "returns": "last,only", # Use ground-likely laser returns
+                "threshold": 0.45,      # Ground / non-ground classification sensitivity
+                "hdiff": 0.25,          # Max local height difference allowed for ground
+                "smooth": True,         # Post-process slopes for smoother terrain
+                "step": 0.65,           # Cloth simulation time step (stability vs speed)
+                "rigidness": 3,         # Cloth stiffness (higher = ignores small objects)
+                "iterations": 500}     # Max solver iterations (safety cap)
+                
+            stages.append({"type": "filters.csf", **params})
+            
+        elif reclassify_ground == "smrf":
+            params = {
+                "cell": 1.0,            # Grid cell size for morphological operations
+                "scalar": 1.25,         # Scales elevation tolerance as window grows
+                "slope": 0.15,          # Allowed terrain steepness (rise/run)
+                "threshold": 0.5,       # Elevation difference cutoff for ground
+                "window": 18.0,         # Maximum neighborhood size
+                "returns": "last,only"}  # Favor ground returns
+                
+            stages.append({"type": "filters.smrf", **params})
+            
+        elif reclassify_ground == "pmf":
+            params = {
+                "cell_size": 1.0,         # Base grid resolution
+                "slope": 1.0,             # Height threshold growth rate (terrain ruggedness)
+                "initial_distance": 0.15, # Vertical noise tolerance
+                "max_distance": 2.5,      # Max allowed elevation difference
+                "max_window_size": 33,    # Largest morphological window
+                "exponential": True,      # Faster window growth (fewer iterations)
+                "returns": "last,only"}    # Ground-favoring returns
+                
+            stages.append({"type": "filters.pmf", **params})
+            
+        else:
+            raise ValueError(f"Unsupported ground_method: {GroundMethod}")
 
-    if debug:
-        pipeline["debug"] = True
+    # Reproject near the end (unless you have a reason to classify in output CRS)
+    stages.append({"type": "filters.reprojection", "out_srs": f"EPSG:{out_crs}"})
+
+    # Finally, extract ground points (class 2).
+    # Ground filters classify; downstream extraction is recommended in PDAL tutorials. :contentReference[oaicite:7]{index=7}
+    stages.append({"type": "filters.expression", "expression": "Classification == 2"})
 
     if save_pointcloud:
         if pc_out_type not in {"las", "laz"}:
@@ -225,8 +299,11 @@ def build_pdal_pipeline(
         writer = {"type": "writers.las", "filename": f"{pc_out_name}.{pc_out_type}"}
         if pc_out_type == "laz":
             writer["compression"] = "laszip"
-        pipeline["pipeline"].append(writer)
+        stages.append(writer)
 
+    pipeline = {"pipeline": stages}
+    if debug:
+        pipeline["debug"] = True
     return pipeline
 
 
@@ -274,6 +351,9 @@ def get_lidar_points(geom_3857: BaseGeometry,
                                           out_name: str = "sample_line",
                                           out_dir: str | Path = ".",
                                           prefer_year: Optional[int] = None,
+                                          reclassify_ground:GroundMethod = "none",
+                                          remove_noise: bool=False,     
+                                          run_outlier: bool=False,
                                           debug: bool = False,):
     """
     EPSG:3857-only workflow.
@@ -332,16 +412,20 @@ def get_lidar_points(geom_3857: BaseGeometry,
 
     # IMPORTANT: match your original build_pdal_pipeline signature exactly:
     pipeline_dict = build_pdal_pipeline(
-          aoi_wkt,          # extent_epsg3857_wkt (positional is safest)
-          datasets,         # usgs_3dep_dataset_names
-          res,              # pc_resolution
-          filter_noise=False,
-          reclassify=False,
-          save_pointcloud=True,
-          out_crs=3857,
-          pc_out_name=str(las_path.with_suffix("")),  # base path without extension
-          pc_out_type="las",
-          debug=debug,)
+            aoi_wkt,
+            datasets,
+            res,
+            out_crs = 3857,
+            reclassify_ground = reclassify_ground,
+            remove_noise = remove_noise,
+            run_outlier = run_outlier,
+            save_pointcloud = True,
+            pc_out_name = str(las_path.with_suffix("")),
+            pc_out_type = "las",
+            debug = False)
+
+
+
 
     pipe = pdal.Pipeline(json.dumps(pipeline_dict))
     pipe.execute()
@@ -392,99 +476,6 @@ def get_available_years(point_geom: BaseGeometry, buffer_distance: float = 3) ->
     return years
 
 
-def build_pdal_dem_pipeline(
-    extent_epsg3857_wkt: str,
-    usgs_3dep_dataset_names: List[str],
-    *,
-    out_crs: int = 3857,
-    dem_resolution: float = 1.0,
-    dem_out_name: str = "dem",
-    dem_out_type: str = "tif",
-    dem_output_type: str = "idw",   # "idw", "min", "max", "mean", "median", "count", "stdev"
-    window_size: int = 0,           # 0 lets PDAL pick for some modes; for IDW you can set >0
-    radius: float = 0.0,            # for IDW / nearest-ish behaviors; 0 means PDAL default
-    ground_only: bool = True,
-    filter_noise: bool = False,
-    debug: bool = False,
-) -> Dict:
-    """
-    Build a PDAL pipeline that:
-      EPT (USGS public) -> (optional filters) -> reprojection -> writers.gdal (DEM GeoTIFF)
-
-    dem_output_type: PDAL writers.gdal 'output_type' options commonly include:
-      "idw", "min", "max", "mean", "median", "count", "stdev"
-    """
-    if dem_out_type.lower() not in {"tif", "tiff"}:
-        raise ValueError("dem_out_type must be 'tif' or 'tiff'.")
-
-    readers = []
-    for name in usgs_3dep_dataset_names:
-        url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{name}/ept.json"
-        readers.append(
-            {
-                "type": "readers.ept",
-                "filename": url,
-                "polygon": extent_epsg3857_wkt,
-                "requests": 3,
-                # EPT resolution controls point decimation coming from the server;
-                # for DEM generation, you typically want it <= dem_resolution (or smaller).
-                "resolution": max(dem_resolution * 0.5, 0.1),
-            }
-        )
-
-    pipeline = {"pipeline": readers}
-
-    # Optional: remove obvious junk classes (depends on dataset; keep off unless you know)
-    if filter_noise:
-        # This keeps only typical "non-noise" classes 0-18-ish; adjust to your liking.
-        # You can also do a strict ground-only later.
-        pipeline["pipeline"].append({"type": "filters.range", "limits": "Classification![7:7]"})
-        # 7 is often "noise" in LAS classification, but not always present.
-
-    # Keep ground only by default for DEM
-    if ground_only:
-        pipeline["pipeline"].append({"type": "filters.range", "limits": "Classification[2:2]"})
-
-    # Reproject (even though your AOI is 3857, keep this here for consistency)
-    pipeline["pipeline"].append({"type": "filters.reprojection", "out_srs": f"EPSG:{out_crs}"})
-
-    # Rasterize to DEM
-    writer = {
-        "type": "writers.gdal",
-        "filename": f"{dem_out_name}.{dem_out_type}",
-        "resolution": dem_resolution,
-        "output_type": dem_output_type,
-        "gdaldriver": "GTiff",
-        # Setting bounds can help ensure consistent raster extent;
-        # PDAL will infer from points if omitted, but AOI bounds often preferred.
-        # "bounds": "([minx,maxx],[miny,maxy])"  # optional (see below in caller)
-    }
-
-    # Optional tuning knobs for some output types
-    if window_size and int(window_size) > 0:
-        writer["window_size"] = int(window_size)
-    if radius and float(radius) > 0:
-        writer["radius"] = float(radius)
-
-    pipeline["pipeline"].append(writer)
-
-    if debug:
-        pipeline["debug"] = True
-
-    return pipeline
-
-
-def _require_dem_deps():
-    try:
-        import pdal  # noqa: F401
-    except Exception as e:
-        raise ImportError(
-            "PDAL required. Install with something like:\n"
-            "  pip install pdal\n"
-            "Or your project extra:\n"
-            "  pip install -e \".[lidar]\""
-        ) from e
-
 
 def _normalize_year(y):
     if y is None:
@@ -498,118 +489,6 @@ def _normalize_year(y):
 def _parse_year_4digit(name: str) -> Optional[int]:
     m = re.search(r"(19\d{2}|20\d{2})", name)
     return int(m.group(1)) if m else None
-
-
-@dataclass(frozen=True, slots=True)
-class DemResult:
-    dem_path: Path
-    most_recent_year: Optional[int]
-    datasets: List[str]
-
-
-def get_dem_around_geometry_3857(
-    geom_3857: BaseGeometry,
-    *,
-    buffer_distance: float = 3.0,
-    dem_resolution: float = 1.0,
-    out_name: str = "dem",
-    out_dir: str | Path = ".",
-    prefer_year: Optional[int] = None,
-    dem_output_type: str = "idw",
-    window_size: int = 0,
-    radius: float = 0.0,
-    ground_only: bool = True,
-    filter_noise: bool = False,
-    debug: bool = False,
-) -> DemResult:
-    """
-    EPSG:3857-only workflow.
-
-    - Buffers geom (meters)
-    - Finds intersecting 3DEP polygons (via your existing load_3dep_index())
-    - Runs PDAL EPT -> writers.gdal GeoTIFF (DEM)
-    - Returns DemResult with output path + most recent year + dataset names
-
-    prefer_year expects a 4-digit year (e.g., 2019).
-    """
-
-    # You already have this in your project:
-    # index.geometries_3857  (iterable of shapely geoms)
-    # index.names (pandas Series / list-like of dataset name strings)
-    index = load_3dep_index()
-
-    prefer_year_n = _normalize_year(prefer_year)
-
-    _require_dem_deps()
-    import pdal
-
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    dem_path = out_dir / f"{out_name}.tif"
-
-    aoi = geom_3857.buffer(buffer_distance, cap_style=3)
-    aoi_wkt = aoi.wkt
-
-    datasets: list[str] = []
-    most_recent: Optional[int] = None
-
-    for i, poly in enumerate(index.geometries_3857):
-        if not poly.intersects(aoi):
-            continue
-
-        name = str(index.names.iloc[i]) if hasattr(index.names, "iloc") else str(index.names[i])
-        yr = _parse_year_4digit(name)
-
-        if prefer_year_n is not None:
-            if yr is None or yr != prefer_year_n:
-                continue
-
-        datasets.append(name)
-        if yr is not None:
-            most_recent = yr if (most_recent is None or yr > most_recent) else most_recent
-
-    if debug:
-        print(f"AOI bounds (3857): {aoi.bounds}")
-        print(f"Intersecting datasets: {len(datasets)}")
-        if datasets:
-            print("First few:", datasets[:5])
-        print("Most recent year:", most_recent)
-
-    if not datasets:
-        raise ValueError("No 3DEP polygon intersects the AOI (or year filter excluded all).")
-
-    # Build pipeline
-    pipeline_dict = build_pdal_dem_pipeline(
-        aoi_wkt,
-        datasets,
-        out_crs=3857,
-        dem_resolution=dem_resolution,
-        dem_out_name=str(dem_path.with_suffix("")),
-        dem_out_type="tif",
-        dem_output_type=dem_output_type,
-        window_size=window_size,
-        radius=radius,
-        ground_only=ground_only,
-        filter_noise=filter_noise,
-        debug=debug,
-    )
-
-    # (Optional but often helpful) force DEM bounds to AOI bounds for consistent extents:
-    # PDAL expects: "([minx,maxx],[miny,maxy])"
-    minx, miny, maxx, maxy = aoi.bounds
-    pipeline_dict["pipeline"][-1]["bounds"] = f"([{minx},{maxx}],[{miny},{maxy}])"
-
-    pipe = pdal.Pipeline(json.dumps(pipeline_dict))
-    pipe.execute()
-
-    if not dem_path.exists():
-        raise FileNotFoundError(f"Expected DEM not found: {dem_path}")
-
-    return DemResult(
-        dem_path=dem_path,
-        most_recent_year=most_recent,
-        datasets=datasets,
-    )
 
 
 
@@ -838,7 +717,7 @@ def crawl_trace(location, N, min_height, max_height, window_size, D, r, resoluti
     index = load_3dep_index()
     print(f'Downloading LiDAR data...')
 
-    pts = get_lidar_points_around_geometry_3857(point_geom, buffer_distance = 500, res = resolution, out_name="las")
+    pts = get_lidar_points(point_geom, buffer_distance = 500, res = resolution, out_name="las")
 
     g_points = pts.ground_xyz
     all_points = pts.all_xyz
